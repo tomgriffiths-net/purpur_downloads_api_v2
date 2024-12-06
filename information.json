@@ -1,0 +1,10 @@
+{
+    "dependencies": {
+        "settings": 2
+    },
+    "id_name": "purpur_downloads_api_v2",
+    "version": 1,
+    "author": "tom",
+    "name": "Downloads API for Purpur (API V2)",
+    "description": ""
+}
