@@ -1,33 +1,74 @@
 <?php
-//Your Settings can be read here: settings::read('myArray/settingName') = $settingValue;
-//Your Settings can be saved here: settings::set('myArray/settingName',$settingValue,$overwrite = true/false);
 class purpur_downloads_api_v2{
-    //public static function command($line):void{}//Run when base command is class name, $line is anything after base command (string). e.g. > [base command] [$line]
-    //public static function init():void{}//Run at startup
     public static function getLatest(string $projectName):bool{
-        mklog('general','Downloading the latest version of papermc');
+        mklog(1, 'Downloading the latest version of ' . $projectName);
+
         $latestVersion = self::getLatestVersion($projectName);
-        $latestBuild = self::getLatestBuild($projectName,$latestVersion);
-        return self::downloadJar($projectName,$latestVersion,$latestBuild);
-    }
-    public static function listBuilds(string $projectName, string $version):array{
-        $buildsInfo = json::readFile("https://api.purpurmc.org/v2/" . $projectName . "/" . $version . "/");
-        $defaultBuilds = array();
-        foreach($buildsInfo['builds']['all'] as $build){
-            $defaultBuilds[] = $build;
+        if(!is_string($latestVersion)){
+            mklog(2, 'Failed to get latest version of ' . $projectName . ' due to a version issue');
+            return false;
         }
-        return $defaultBuilds;
+
+        $latestBuild = self::getLatestBuild($projectName, $latestVersion);
+        if(!is_string($latestVersion)){
+            mklog(2, 'Failed to get latest version of ' . $projectName . ' due to a build issue');
+            return false;
+        }
+
+        return self::downloadJar($projectName, $latestVersion, $latestBuild);
     }
-    public static function getLatestBuild(string $projectName, string $version):string|int{
-        return max(self::listBuilds($projectName,$version));
+    public static function listBuilds(string $projectName, string $version):array|false{
+        $apiUrl = settings::read("apiUrl");
+        if(!is_string($apiUrl) || empty($apiUrl)){
+            mklog(2, 'Failed to read apiUrl');
+            return false;
+        }
+
+        $buildsInfo = json::readFile($apiUrl . "/" . $projectName . "/" . $version . "/");
+        if(!is_array($buildsInfo) || !isset($buildsInfo['builds']['all']) || !is_array($buildsInfo['builds']['all'])){
+            mklog(2, 'Failed to list builds for ' . $projectName . '/' . $version);
+            return false;
+        }
+
+        $builds = [];
+        foreach($buildsInfo['builds']['all'] as $build){
+            $builds[] = $build;
+        }
+
+        return $builds;
     }
-    public static function listVersions(string $projectName):array{
-        return json::readFile("https://api.purpurmc.org/v2/" . $projectName)['versions'];
+    public static function getLatestBuild(string $projectName, string $version):int|false{
+        $builds = self::listBuilds($projectName, $version);
+        if(!is_array($builds)){
+            mklog(2, 'Failed to get latest build for ' . $projectName . '/' . $version);
+        }
+
+        return (int) max($builds);
     }
-    public static function getLatestVersion(string $projectName):bool|string{
-        $paperInfo = self::listVersions($projectName);
-        $versions = array();
-        foreach($paperInfo as $version){
+    public static function listVersions(string $projectName):array|false{
+        $apiUrl = settings::read("apiUrl");
+        if(!is_string($apiUrl) || empty($apiUrl)){
+            mklog(2, 'Failed to read apiUrl');
+            return false;
+        }
+
+        $project = json::readFile($apiUrl . "/" . $projectName);
+        if(!is_array($project) || !isset($project['versions']) || !is_array($project['versions'])){
+            mklog(2, 'Failed to get project information for ' . $projectName);
+            return false;
+        }
+
+        return $project['versions'];
+    }
+    public static function getLatestVersion(string $projectName):string|false{
+        $projectVersions = self::listVersions($projectName);
+        if(!is_array($projectVersions)){
+            mklog(2, 'Failed to get latest version for ' . $projectName . ' due to a version list error');
+            return false;
+        }
+
+        $versions = [];
+        foreach($projectVersions as $version){
             $v1 = substr($version,0,strpos($version,"."));
             $v2 = substr($version,strpos($version,".")+1);
             if(strripos($v2,".") === false){
@@ -48,89 +89,136 @@ class purpur_downloads_api_v2{
                 $versions[$version] = $vnum;
             }
         }
+
         $latestVersion = max($versions);
         foreach($versions as $versionName => $versionValue){
             if($versionValue == $latestVersion){
                 return $versionName;
             }
         }
+
+        mklog(2, 'Failed to get latest version for ' . $projectName . ' as there are no available versions');
         return false;
     }
-    //public static function command($line):void{}//Run when base command is class name, $line is anything after base command (string). e.g. > [base command] [$line]
-    public static function filePath(string $projectName, string $version, int|string $build, bool $autoDownload = true):bool|string{
-        if(is_string($build)){
-            $build = intval($build);
+    public static function filePath(string $projectName, string $version, int $build, bool $autoDownload=true):bool|string{
+        $libraryDir = settings::read('libraryDir');
+        if(!is_string($libraryDir) || empty($libraryDir)){
+            mklog(2, 'Failed to read libraryDir');
+            return false;
         }
-        $filePath = settings::read('libraryDir') . '\\' . $projectName . '\\' . $version . '\\' . $build . '.json';
-        retry:
-        if(is_file($filePath)){
-            return substr($filePath,0,-5) . '\download\\' . $projectName . '-' . $version . '-' . $build . '.jar';
+
+        $filePath = $libraryDir . '\\' . $projectName . '\\' . $version . '\\' . $build . '.json';
+        $jarPath = substr($filePath, 0, -5) . '\download\\' . $projectName . '-' . $version . '-' . $build . '.jar';
+
+        if(is_file($jarPath)){
+            return $jarPath;
         }
         else{
             if($autoDownload){
-                if(self::downloadJar($projectName, $version, $build)){
-                    goto retry;
+                if(self::downloadJar($projectName, $version, $build) && is_file($jarPath)){
+                    return $jarPath;
+                }
+                else{
+                    mklog(2, 'Failed to get filepath for ' . $projectName . '/' . $version . '/' . $build . ' as it could not be downloaded');
+                    return false;
                 }
             }
+            else{
+                mklog(2, 'Cannot get filepath for ' . $projectName . '/' . $version . '/' . $build . ' as it is not already downloaded and downloading has been disabled');
+                return false;
+            }
         }
-        return false;
     }
-    public static function downloadJar(string $projectName, string $version, int|string $build):bool{
-
-        if(is_string($build)){
-            $build = intval($build);
+    public static function downloadJar(string $projectName, string $version, int $build):bool{
+        $libraryDir = settings::read('libraryDir');
+        if(!is_string($libraryDir) || empty($libraryDir)){
+            mklog(2, 'Failed to read libraryDir');
+            return false;
         }
-
-        $libraryDir = settings::read("libraryDir");
         $apiUrl = settings::read("apiUrl");
-        $path = "";
-        $projectsPath = $path;
-        $onlineProjectInfo = json::readFile($apiUrl . $path,false);
-        $localProjectInfo = json::readFile($libraryDir . $path . "/_projects.json",true,array("projects"=>array()));
-
-        if(in_array($projectName,$onlineProjectInfo['projects'])){
-            if(!in_array($projectName,$localProjectInfo['projects'])){
-                array_push($localProjectInfo['projects'],$projectName);
-            }
-            $path .= "/" . $projectName;
-            $versionsPath = $path;
-            $onlineVersionInfo = json::readFile($apiUrl . $path,false);
-            $localVersionInfo = json::readFile($libraryDir . $path . ".json",true,array("versions"=>array()));
-            if(in_array($version,$onlineVersionInfo['versions'])){
-                if(!in_array($version,$localVersionInfo['versions'])){
-                    array_push($localVersionInfo['versions'],$version);
-                }
-                $path .= "/" . $version;
-                $buildsPath = $path;
-                $onlineBuildsInfo = json::readFile($apiUrl . $path,false);
-                $localBuildsInfo = json::readFile($libraryDir . $path . ".json",true,array("builds"=>array("all"=>array())));
-                if(in_array($build,$onlineBuildsInfo['builds']['all'])){
-                    if(!in_array($build,$localBuildsInfo['builds']['all'])){
-                        array_push($localBuildsInfo['builds']['all'],$build);
-                    }
-                    $path .= "/" . $build;
-                    $buildPath = $path;
-                    $buildInfo = json::readFile($apiUrl . $path,false);
-                    $fileName = $projectName . '-' . $version . '-' . $build . '.jar';
-                    $path .= "/download" . "/";
-                    downloader::downloadFile($apiUrl . $path, $libraryDir . $path . $fileName);
-                    if(md5_file($libraryDir . $path . $fileName) === $buildInfo['md5']){
-                        json::writeFile($libraryDir . $projectsPath . "/_projects.json",$localProjectInfo,true);
-                        json::writeFile($libraryDir . $versionsPath . ".json",$localVersionInfo,true);
-                        json::writeFile($libraryDir . $buildsPath . ".json",$localBuildsInfo,true);
-                        json::writeFile($libraryDir . $buildPath . ".json",$buildInfo,true);
-                        return true;
-                    }
-                    else{
-                        mklog('warning','Failed to download ' . $fileName,false);
-                        if(is_file($libraryDir . $path)){
-                            unlink($libraryDir . $path);
-                        }
-                    }
-                }
-            }
+        if(!is_string($apiUrl) || empty($apiUrl)){
+            mklog(2, 'Failed to read apiUrl');
+            return false;
         }
-        return false;
+
+        $path = "";
+
+        //Projects
+        $projectsPath = $path;
+        $onlineProjectInfo = json::readFile($apiUrl . $path, false);
+        if(!is_array($onlineProjectInfo)){
+            mklog(2, 'Failed to read projects list');
+            return false;
+        }
+        if(!in_array($projectName,$onlineProjectInfo['projects'])){
+            mklog(2, 'The online info does not contain the project ' . $projectName);
+            return false;
+        }
+        $localProjectInfo = json::readFile($libraryDir . $path . "/_projects.json", true, ["projects"=>[]]);
+        if(!in_array($projectName,$localProjectInfo['projects'])){
+            array_push($localProjectInfo['projects'],$projectName);
+        }
+        $path .= "/" . $projectName;
+
+        //Versions
+        $versionsPath = $path;
+        $onlineVersionInfo = json::readFile($apiUrl . $path,false);
+        if(!is_array($onlineVersionInfo)){
+            mklog(2, 'Failed to read versions list for ' . $projectName);
+            return false;
+        }
+        if(!in_array($version,$onlineVersionInfo['versions'])){
+            mklog(2, 'The online info for ' . $projectName . ' does not contain the version ' . $version);
+            return false;
+        }
+        $localVersionInfo = json::readFile($libraryDir . $path . ".json", true, ["versions"=>[]]);
+        if(!in_array($version,$localVersionInfo['versions'])){
+            array_push($localVersionInfo['versions'],$version);
+        }
+        $path .= "/" . $version;
+
+        //Builds
+        $buildsPath = $path;
+        $onlineBuildsInfo = json::readFile($apiUrl . $path,false);
+        if(!is_array($onlineBuildsInfo)){
+            mklog(2, 'Failed to read builds list for ' . $projectName . '/' . $version);
+            return false;
+        }
+        if(!in_array($build, $onlineBuildsInfo['builds']['all'])){
+            mklog(2, 'The online info for ' . $projectName . '/' . $version . ' does not contain the build ' . $build);
+            return false;
+        }
+        $localBuildsInfo = json::readFile($libraryDir . $path . ".json", true, ["builds"=>["all"=>[]]]);
+        if(!in_array($build,$localBuildsInfo['builds']['all'])){
+            array_push($localBuildsInfo['builds']['all'],$build);
+        }
+        $path .= "/" . $build;
+
+        //Specific build
+        $buildPath = $path;
+        $buildInfo = json::readFile($apiUrl . $path, false);
+        $fileName = $projectName . '-' . $version . '-' . $build . '.jar';
+        $path .= "/download" . "/";
+        if(!downloader::downloadFile($apiUrl . $path, $libraryDir . $path . $fileName)){
+            mklog(2, 'Failed to download jar file for ' . $projectName . '/' . $version . '/' . $build);
+            return false;
+        }
+        if(md5_file($libraryDir . $path . $fileName) !== $buildInfo['md5']){
+            mklog(2, 'The md5 checksum for the file ' . $fileName . ' did not match the provided value');
+            if(is_file($libraryDir . $path . $fileName)){
+                if(!unlink($libraryDir . $path . $fileName)){
+                    mklog(2, 'Failed to delete corrupt file ' . $fileName);
+                }
+            }
+            return false;
+        }
+
+        json::writeFile($libraryDir . $projectsPath . "/_projects.json", $localProjectInfo, true);
+        json::writeFile($libraryDir . $versionsPath . ".json", $localVersionInfo, true);
+        json::writeFile($libraryDir . $buildsPath . ".json", $localBuildsInfo, true);
+        json::writeFile($libraryDir . $buildPath . ".json", $buildInfo, true);
+
+        return true;
     }
     public static function init():void{
         $defaultSettings = array(
@@ -138,9 +226,11 @@ class purpur_downloads_api_v2{
             "libraryDir" => "mcservers\\library\\purpurmc"
         );
         foreach($defaultSettings as $settingName => $settingValue){
-            settings::set($settingName,$settingValue,false);
+            if(!settings::isset($settingName) && !settings::set($settingName, $settingValue)){
+                mklog(2, 'Failed to set default setting ' . $settingName);
+            }
         }
-    }//Run at startup
+    }
     public static function setSetting(string $settingName, mixed $settingValue, bool $overwrite):bool{
         return settings::set($settingName,$settingValue,$overwrite);
     }
